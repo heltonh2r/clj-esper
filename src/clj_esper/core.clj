@@ -141,6 +141,24 @@
   [statements & handlers]
   (doseq [s statements] (apply attach-statement s handlers)))
 
+(def var-types->java-class
+  {:string String
+   :int Integer
+   :long Long
+   :double Double})
+
+(defn attach-variables
+  "Attach variables to esper configuration in order to be used by the statements
+   vars must be a sequence of tuples: `[[:var1-name :var1-type :var1-value]
+                                        [:var2-name :var2-type :var2-value]]`"
+  [vars]
+  ;; TODO validate vars struture
+  (doseq [[var-name var-type var-value] vars]
+    (.. (configuration *service*)
+        (addVariable (name var-name)
+                     (var-types->java-class var-type Object)
+                     var-value))))
+
 (defn trigger-event
   [event]
   (let [event-type (event-name (meta event))
