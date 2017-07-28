@@ -7,10 +7,10 @@
   "Creates an UpdateListener proxy that can be attached to
   handle updates to Esper statements. fun will be called for
   each newEvent received."
-  [fun]
+  [event-handler]
   (proxy [UpdateListener] []
     (update [newEvents oldEvents]
-      (apply fun newEvents))))
+      (event-handler newEvents oldEvents))))
 
 (defn create-service
   ([configuration]
@@ -130,16 +130,25 @@
 
 (defn attach-statement
   "Creates a statement with attached handlers"
-  [statement & handlers]
-  (letfn [(broadcast [& args]
-            (doseq [fn handlers] (apply fn args)))]
-    (attach-listener (create-stmt statement *service*)
-                     (create-listener broadcast))))
+  [statement events-handler]
+  (attach-listener (create-stmt statement *service*)
+                   (create-listener events-handler)))
 
 (defn attach-statements
   "Allows attachment of multiple statements to the same handlers."
   [statements & handlers]
   (doseq [s statements] (apply attach-statement s handlers)))
+
+
+(defn destroy-all-statements
+  []
+  (.. *service* getEPAdministrator destroyAllStatements))
+
+
+(defn stop-all-statements
+  []
+  (.. *service* getEPAdministrator stopAllStatements))
+
 
 (def var-types->java-class
   {:string String
