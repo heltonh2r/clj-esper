@@ -1,7 +1,58 @@
 (ns clj-esper.core
-  (:import [java.util Properties]
-           [com.espertech.esper.client Configuration UpdateListener EPStatement EPServiceProviderManager])
-  (:use [clojure.walk :only (stringify-keys)]))
+  (:require [clojure.walk :refer :all])
+  (:import clojure.lang.PersistentHashMap
+           [com.espertech.esper.client Configuration EPServiceProviderManager EventBean UpdateListener]
+           com.espertech.esper.collection.Pair
+           com.espertech.esper.event.bean.BeanEventBean
+           com.espertech.esper.event.map.MapEventBean
+           com.espertech.esper.event.WrapperEventBean
+           [java.util HashMap Properties]))
+
+;; Convert EventBeans to Clojure PersistentHashMap
+(defprotocol EventBeanToCljMap
+  (bean->clj-map [this]))
+
+(extend-protocol EventBeanToCljMap
+  (Class/forName "[Lcom.espertech.esper.client.EventBean;")
+  (bean->clj-map [this]
+    (map bean->clj-map this))
+
+  MapEventBean
+  (bean->clj-map [this]
+    (-> this .getProperties bean->clj-map))
+
+  WrapperEventBean
+  (bean->clj-map [this]
+    (-> this .getUnderlying bean->clj-map))
+
+  BeanEventBean
+  (bean->clj-map [this]
+    (-> this .getUnderlying bean))
+
+  EventBean
+  (bean->clj-map [this]
+    (bean this))
+
+  Pair
+  (bean->clj-map [this]
+    (merge (bean->clj-map (.getFirst this))
+           (bean->clj-map (.getSecond this))))
+
+  HashMap
+  (bean->clj-map [this]
+    (-> (into {} this) clojure.walk/keywordize-keys))
+
+  PersistentHashMap
+  (bean->clj-map [this]
+    (clojure.walk/keywordize-keys this))
+
+  nil
+  (bean->clj-map [this]
+    nil)
+
+  Object
+  (bean->clj-map [this]
+    this))
 
 (defn create-listener
   "Creates an UpdateListener proxy that can be attached to
@@ -10,7 +61,10 @@
   [event-handler]
   (proxy [UpdateListener] []
     (update [newEvents oldEvents]
-      (event-handler newEvents oldEvents))))
+      (try
+        (event-handler (bean->clj-map newEvents) (bean->clj-map oldEvents))
+        (catch Exception ex
+          (.printStackTrace ex))))))
 
 (defn create-service
   ([configuration]
@@ -69,6 +123,7 @@
                                   nil
                                   (Double/parseDouble s)))
 (defmethod to-double Integer [i] (double i))
+(defmethod to-double Long [i] (double i))
 (defmethod to-double Double [d] d)
 
 (def coercions {:int to-int
@@ -79,7 +134,7 @@
   "Coerces event values into their relevant type"
   [m event-attributes]
   (letfn [(coerce [k v t]
-            (let [coercion (t coercions)]
+            (let [coercion (coercions t)]
               (if (or (nil? coercion)
                       (nil? v))
                 [k v]
@@ -88,7 +143,7 @@
                     (coerce k v (event-attributes k)))
                   m))))
 
-(defn new-event
+(defn new-event*
   [event & attrs]
   (let [attr-names (event-attribute-names event)
         empty-map (apply hash-map
@@ -98,6 +153,10 @@
                                      (apply hash-map attrs))
                               (event-attributes event))
       event)))
+
+(defn new-event
+  [event-def event-data]
+  (apply new-event* event-def event-data))
 
 ;; Taken from the old clojure.contrib.java-utils
 (defn- ^Properties as-properties
@@ -130,9 +189,11 @@
 
 (defn attach-statement
   "Creates a statement with attached handlers"
-  [statement events-handler]
-  (attach-listener (create-stmt statement *service*)
-                   (create-listener events-handler)))
+  ([statement events-handler]
+   (attach-statement *service* statement events-handler))
+  ([service statement events-handler]
+   (attach-listener (create-stmt statement service)
+                    (create-listener events-handler))))
 
 (defn attach-statements
   "Allows attachment of multiple statements to the same handlers."
@@ -141,13 +202,17 @@
 
 
 (defn destroy-all-statements
-  []
-  (.. *service* getEPAdministrator destroyAllStatements))
+  ([]
+   (destroy-all-statements *service*))
+  ([service]
+   (.. service getEPAdministrator destroyAllStatements)))
 
 
 (defn stop-all-statements
-  []
-  (.. *service* getEPAdministrator stopAllStatements))
+  ([]
+   (stop-all-statements *service*))
+  ([service]
+   (.. service getEPAdministrator stopAllStatements)))
 
 
 (def var-types->java-class
@@ -169,10 +234,12 @@
                      var-value))))
 
 (defn trigger-event
-  [event]
-  (let [event-type (event-name (meta event))
-        event-data (stringify-keys event)]
-    (send-event *service* event-data event-type)))
+  ([event]
+   (trigger-event *service* event))
+  ([service event]
+   (let [event-type (event-name (meta event))
+         event-data (stringify-keys event)]
+     (send-event service event-data event-type))))
 
 (defn statement-names
   "Returns the names of all statements that have been registered"
